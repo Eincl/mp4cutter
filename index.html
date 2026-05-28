@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MP4 Cutter — 클라이언트 영상 편집</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/coi-serviceworker.js').catch(() => {});
+      }
+    </script>
+
+    <div id="app">
+      <header class="header">
+        <div class="header-inner">
+          <h1>MP4 Cutter</h1>
+          <span class="badge">서버 업로드 없음 · 완전 로컬 처리</span>
+        </div>
+      </header>
+
+      <main class="main">
+        <!-- Drop zone -->
+        <div id="drop-zone" class="drop-zone">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M7 16a4 4 0 0 1-.88-7.903A5 5 0 1 1 15.9 6L16 6a5 5 0 0 1 1 9.9M15 13l-3-3m0 0l-3 3m3-3v12" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <p>MP4 파일을 드래그하거나 클릭하여 선택</p>
+          <span class="drop-hint">MP4, MOV, AVI, WebM 지원</span>
+          <input type="file" id="file-input" accept="video/*" />
+        </div>
+
+        <!-- Editor (shown after file load) -->
+        <div id="editor" class="editor hidden">
+
+          <!-- Video preview + timeline -->
+          <div class="video-panel">
+            <div class="video-wrapper">
+              <video id="preview" preload="metadata"></video>
+            </div>
+
+            <!-- File info -->
+            <div id="file-info" class="file-info"></div>
+
+            <!-- Timeline scrubber -->
+            <div id="timeline" class="timeline">
+              <div class="timeline-track" id="timeline-track">
+                <div class="playhead" id="playhead"></div>
+                <div class="trim-region" id="trim-region"></div>
+                <div class="trim-handle trim-handle-start" id="handle-start" title="시작 지점 드래그"></div>
+                <div class="trim-handle trim-handle-end" id="handle-end" title="끝 지점 드래그"></div>
+              </div>
+              <div class="timeline-labels">
+                <span id="label-start">0:00.000</span>
+                <span id="label-current" class="label-center">0:00.000</span>
+                <span id="label-end">0:00.000</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Controls panel -->
+          <div class="controls-panel">
+
+            <!-- Trim -->
+            <section class="ctrl-section">
+              <div class="ctrl-header">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M6 9L6 15M18 9L18 15M3 12H21" stroke-linecap="round"/>
+                </svg>
+                <h3>자르기</h3>
+              </div>
+              <div class="ctrl-body">
+                <div class="ctrl-row">
+                  <label for="trim-start-input">시작</label>
+                  <input type="text" id="trim-start-input" class="time-input" placeholder="0:00.000" />
+                  <button class="set-btn" data-target="start" title="현재 재생 위치로 설정">현재↗</button>
+                </div>
+                <div class="ctrl-row">
+                  <label for="trim-end-input">끝</label>
+                  <input type="text" id="trim-end-input" class="time-input" placeholder="0:00.000" />
+                  <button class="set-btn" data-target="end" title="현재 재생 위치로 설정">현재↗</button>
+                </div>
+                <div class="trim-duration" id="trim-duration">선택 구간: —</div>
+              </div>
+            </section>
+
+            <!-- Audio -->
+            <section class="ctrl-section">
+              <div class="ctrl-header">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                </svg>
+                <h3>오디오</h3>
+              </div>
+              <div class="ctrl-body">
+                <div class="ctrl-row">
+                  <label class="toggle-label">
+                    <input type="checkbox" id="mute-audio" />
+                    <span class="toggle"></span>
+                    음소거 (오디오 제거)
+                  </label>
+                </div>
+                <div class="ctrl-row volume-row" id="volume-row">
+                  <label for="volume-slider">볼륨</label>
+                  <input type="range" id="volume-slider" min="0" max="200" value="100" step="5" />
+                  <span id="volume-value" class="value-badge">100%</span>
+                </div>
+              </div>
+            </section>
+
+            <!-- Video settings -->
+            <section class="ctrl-section">
+              <div class="ctrl-header">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="2" y="3" width="20" height="14" rx="2"/>
+                  <path d="M8 21h8M12 17v4"/>
+                </svg>
+                <h3>비디오</h3>
+              </div>
+              <div class="ctrl-body">
+                <div class="ctrl-row">
+                  <label for="bitrate-select">비트레이트</label>
+                  <select id="bitrate-select" class="select-input">
+                    <option value="">원본 유지</option>
+                    <option value="10000k">10 Mbps</option>
+                    <option value="8000k">8 Mbps</option>
+                    <option value="4000k">4 Mbps</option>
+                    <option value="2000k">2 Mbps</option>
+                    <option value="1000k">1 Mbps</option>
+                    <option value="500k">500 Kbps</option>
+                  </select>
+                </div>
+                <div class="ctrl-row">
+                  <label for="resolution-select">해상도</label>
+                  <select id="resolution-select" class="select-input">
+                    <option value="">원본 유지</option>
+                    <option value="3840:2160">4K (2160p)</option>
+                    <option value="1920:1080">1080p</option>
+                    <option value="1280:720">720p</option>
+                    <option value="854:480">480p</option>
+                    <option value="640:360">360p</option>
+                  </select>
+                </div>
+              </div>
+            </section>
+
+            <!-- Process button -->
+            <button id="process-btn" class="process-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M5 3l14 9-14 9V3z" fill="currentColor" stroke="none"/>
+              </svg>
+              처리 시작
+            </button>
+
+            <!-- Progress -->
+            <div id="progress-section" class="progress-section hidden">
+              <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+              </div>
+              <p id="progress-text" class="progress-text">FFmpeg 로딩 중...</p>
+            </div>
+
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
