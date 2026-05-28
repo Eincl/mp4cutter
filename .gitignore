@@ -12,6 +12,14 @@ dist
 dist-ssr
 *.local
 
+# FFmpeg WASM (regenerated via postinstall)
+public/ffmpeg-core.js
+public/ffmpeg-core.wasm
+public/coi-serviceworker.js
+public/ffmpeg-umd.js
+public/814.ffmpeg.js
+public/ffmpeg-util-umd.js
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

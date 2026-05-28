@@ -1,14 +1,16 @@
 import './style.css';
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { fetchFile } from '@ffmpeg/util';
+
+const { FFmpeg } = window.FFmpegWASM;
 
 // ── State ──────────────────────────────────────────────────────────────────
 const state = {
-  file: null,
-  duration: 0,
+  segments: [],      // [{file, duration, cumStart, objectURL}]
+  totalDuration: 0,
   trimStart: 0,
   trimEnd: 0,
-  dragging: null, // 'start' | 'end' | null
+  dragging: null,
+  segIdx: 0,
 };
 
 const ffmpeg = new FFmpeg();
@@ -17,9 +19,18 @@ let ffmpegLoaded = false;
 // ── DOM refs ───────────────────────────────────────────────────────────────
 const dropZone       = document.getElementById('drop-zone');
 const fileInput      = document.getElementById('file-input');
+const addFileInput   = document.getElementById('add-file-input');
+const addFilesBtn    = document.getElementById('add-files-btn');
 const editor         = document.getElementById('editor');
 const preview        = document.getElementById('preview');
-const fileInfo       = document.getElementById('file-info');
+const videoOverlay   = document.getElementById('video-overlay');
+const bigPlayIcon    = document.getElementById('big-play-icon');
+const speedBadge     = document.getElementById('speed-badge');
+const playerPlayBtn  = document.getElementById('player-play-btn');
+const iconPlay       = document.getElementById('icon-play');
+const iconPause      = document.getElementById('icon-pause');
+const fileListEl     = document.getElementById('file-list');
+const fileListTotal  = document.getElementById('file-list-total');
 const timelineTrack  = document.getElementById('timeline-track');
 const playhead       = document.getElementById('playhead');
 const trimRegion     = document.getElementById('trim-region');
@@ -41,141 +52,342 @@ const processBtn     = document.getElementById('process-btn');
 const progressSection = document.getElementById('progress-section');
 const progressFill   = document.getElementById('progress-fill');
 const progressText   = document.getElementById('progress-text');
+const estimateBar    = document.getElementById('estimate-bar');
+const estimateText   = document.getElementById('estimate-text');
 
 // ── Time formatting ────────────────────────────────────────────────────────
-function formatTime(seconds) {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  const ms = Math.floor((seconds % 1) * 1000);
-  return `${m}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+function formatTime(s) {
+  const m = Math.floor(s / 60);
+  const ss = Math.floor(s % 60);
+  const ms = Math.floor((s % 1) * 1000);
+  return `${m}:${String(ss).padStart(2,'0')}.${String(ms).padStart(3,'0')}`;
 }
-
+function formatTimeShort(s) {
+  const m = Math.floor(s / 60);
+  return `${m}:${String(Math.floor(s % 60)).padStart(2,'0')}`;
+}
 function parseTime(str) {
-  // Accepts: "1:23.456", "83.456", "1:23", "83"
   str = str.trim();
-  const colonMatch = str.match(/^(\d+):(\d{1,2})(?:\.(\d{1,3}))?$/);
-  if (colonMatch) {
-    const m = parseInt(colonMatch[1]);
-    const s = parseInt(colonMatch[2]);
-    const ms = colonMatch[3] ? parseInt(colonMatch[3].padEnd(3, '0')) : 0;
-    return m * 60 + s + ms / 1000;
-  }
-  const numMatch = str.match(/^(\d+(?:\.\d+)?)$/);
-  if (numMatch) return parseFloat(numMatch[1]);
-  return null;
+  const c = str.match(/^(\d+):(\d{1,2})(?:\.(\d{1,3}))?$/);
+  if (c) return parseInt(c[1]) * 60 + parseInt(c[2]) + (c[3] ? parseInt(c[3].padEnd(3,'0')) / 1000 : 0);
+  const n = str.match(/^(\d+(?:\.\d+)?)$/);
+  return n ? parseFloat(n[1]) : null;
+}
+function formatFileSize(b) {
+  return b < 1048576 ? (b/1024).toFixed(1)+' KB' : (b/1048576).toFixed(1)+' MB';
 }
 
-function formatFileSize(bytes) {
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+// ── Multi-segment helpers ──────────────────────────────────────────────────
+function getGlobalTime() {
+  const seg = state.segments[state.segIdx];
+  return seg ? seg.cumStart + preview.currentTime : 0;
+}
+
+function findSegIdx(t) {
+  let idx = state.segments.findIndex((s, i) => {
+    const next = state.segments[i + 1]?.cumStart ?? state.totalDuration;
+    return t >= s.cumStart && t < next;
+  });
+  return idx === -1 ? state.segments.length - 1 : idx;
+}
+
+function seekToGlobal(t, thenPlay = false) {
+  const target = Math.max(0, Math.min(t, state.totalDuration));
+  const idx = findSegIdx(target);
+  const seg = state.segments[idx];
+  const local = target - seg.cumStart;
+
+  if (idx !== state.segIdx) {
+    state.segIdx = idx;
+    preview.src = seg.objectURL;
+    renderFileList();
+    preview.addEventListener('loadedmetadata', () => {
+      preview.currentTime = Math.min(local, preview.duration);
+      if (thenPlay) preview.play().catch(() => {});
+    }, { once: true });
+  } else {
+    preview.currentTime = Math.min(local, preview.duration);
+    if (thenPlay && preview.paused) preview.play().catch(() => {});
+  }
+}
+
+function rebuildCumulative() {
+  let cum = 0;
+  state.segments.forEach(s => { s.cumStart = cum; cum += s.duration; });
+  state.totalDuration = cum;
+}
+
+// ── File list render ───────────────────────────────────────────────────────
+let dragSrcIdx = null;
+
+function renderFileList() {
+  fileListEl.innerHTML = '';
+  state.segments.forEach((seg, i) => {
+    const div = document.createElement('div');
+    div.className = 'file-entry' + (i === state.segIdx ? ' active' : '');
+    div.draggable = true;
+    div.innerHTML =
+      `<svg class="fe-drag" viewBox="0 0 10 16" fill="currentColor">` +
+        `<circle cx="3" cy="3" r="1.5"/><circle cx="7" cy="3" r="1.5"/>` +
+        `<circle cx="3" cy="8" r="1.5"/><circle cx="7" cy="8" r="1.5"/>` +
+        `<circle cx="3" cy="13" r="1.5"/><circle cx="7" cy="13" r="1.5"/>` +
+      `</svg>` +
+      `<span class="fe-idx">${i+1}</span>` +
+      `<span class="fe-name" title="${seg.file.name}">${seg.file.name}</span>` +
+      `<span class="fe-dur">${formatTime(seg.duration)}</span>` +
+      `<span class="fe-size">${formatFileSize(seg.file.size)}</span>` +
+      `<button class="fe-remove" data-idx="${i}" title="제거">×</button>`;
+
+    // Drag reorder
+    div.addEventListener('dragstart', e => {
+      dragSrcIdx = i;
+      setTimeout(() => div.classList.add('dragging'), 0);
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    div.addEventListener('dragend', () => {
+      div.classList.remove('dragging');
+      fileListEl.querySelectorAll('.file-entry').forEach(el =>
+        el.classList.remove('drag-over-top', 'drag-over-bottom'));
+      dragSrcIdx = null;
+    });
+    div.addEventListener('dragover', e => {
+      e.preventDefault(); e.stopPropagation();
+      fileListEl.querySelectorAll('.file-entry').forEach(el =>
+        el.classList.remove('drag-over-top', 'drag-over-bottom'));
+      const mid = div.getBoundingClientRect().top + div.getBoundingClientRect().height / 2;
+      div.classList.add(e.clientY < mid ? 'drag-over-top' : 'drag-over-bottom');
+    });
+    div.addEventListener('dragleave', e => {
+      if (!div.contains(e.relatedTarget))
+        div.classList.remove('drag-over-top', 'drag-over-bottom');
+    });
+    div.addEventListener('drop', e => {
+      e.preventDefault(); e.stopPropagation();
+      if (dragSrcIdx === null || dragSrcIdx === i) return;
+      const mid = div.getBoundingClientRect().top + div.getBoundingClientRect().height / 2;
+      const insertBefore = e.clientY < mid ? i : i + 1;
+      if (insertBefore === dragSrcIdx || insertBefore === dragSrcIdx + 1) return;
+      const currentSeg = state.segments[state.segIdx];
+      const [moved] = state.segments.splice(dragSrcIdx, 1);
+      state.segments.splice(insertBefore > dragSrcIdx ? insertBefore - 1 : insertBefore, 0, moved);
+      rebuildCumulative();
+      state.segIdx = state.segments.indexOf(currentSeg);
+      state.trimEnd = Math.min(state.trimEnd, state.totalDuration);
+      renderFileList();
+      updateTimeline();
+      updateEstimate();
+    });
+
+    div.addEventListener('click', e => {
+      if (e.target.classList.contains('fe-remove')) {
+        removeSegment(parseInt(e.target.dataset.idx));
+      } else {
+        seekToGlobal(seg.cumStart);
+      }
+    });
+    fileListEl.appendChild(div);
+  });
+  const totalSize = state.segments.reduce((a, s) => a + s.file.size, 0);
+  fileListTotal.textContent =
+    `${state.segments.length}개 파일 · ${formatTime(state.totalDuration)} · ${formatFileSize(totalSize)}`;
+}
+
+function removeSegment(idx) {
+  URL.revokeObjectURL(state.segments[idx].objectURL);
+  state.segments.splice(idx, 1);
+  if (!state.segments.length) {
+    dropZone.classList.remove('hidden');
+    editor.classList.add('hidden');
+    return;
+  }
+  rebuildCumulative();
+  state.trimEnd   = Math.min(state.trimEnd,   state.totalDuration);
+  state.trimStart = Math.min(state.trimStart, state.trimEnd - 0.1);
+  if (state.segIdx >= state.segments.length) state.segIdx = state.segments.length - 1;
+  preview.src = state.segments[state.segIdx].objectURL;
+  renderFileList();
+  updateTimeline();
+  updateEstimate();
+}
+
+// ── Add files ──────────────────────────────────────────────────────────────
+function addFiles(fileList) {
+  const files = Array.from(fileList).filter(f => f.type.startsWith('video/'));
+  if (!files.length) return;
+
+  Promise.all(files.map(file => new Promise(resolve => {
+    const objectURL = URL.createObjectURL(file);
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.src = objectURL;
+    v.onloadedmetadata = () => resolve({ file, duration: v.duration, cumStart: 0, objectURL });
+    v.onerror = ()       => resolve({ file, duration: 0,           cumStart: 0, objectURL });
+  }))).then(newSegs => {
+    const seen = new Set(state.segments.map(s => s.file.name));
+    const merged = [
+      ...state.segments,
+      ...newSegs.filter(s => !seen.has(s.file.name)),
+    ];
+    merged.sort((a, b) => a.file.name.localeCompare(b.file.name));
+
+    state.segments = merged;
+    state.segIdx   = 0;
+    rebuildCumulative();
+    state.trimStart = 0;
+    state.trimEnd   = state.totalDuration;
+
+    preview.src = state.segments[0].objectURL;
+    preview.addEventListener('loadedmetadata', () => {
+      renderFileList();
+      updateTimeline();
+      updatePlayhead();
+      updatePlayPauseUI();
+      dropZone.classList.add('hidden');
+      editor.classList.remove('hidden');
+    }, { once: true });
+  });
+}
+
+// ── Estimated output size ─────────────────────────────────────────────────
+function updateEstimate() {
+  if (!state.segments.length || !state.totalDuration) return;
+  const trimDur    = state.trimEnd - state.trimStart;
+  const totalSize  = state.segments.reduce((a, s) => a + s.file.size, 0);
+  const AUDIO_BPS  = 128_000;
+  const origBps    = (totalSize * 8) / state.totalDuration;
+  let videoBps     = Math.max(origBps - AUDIO_BPS, 0);
+
+  if (bitrateSelect.value) {
+    videoBps = parseInt(bitrateSelect.value) * 1000;
+  } else if (resolutionSelect.value && preview.videoWidth && preview.videoHeight) {
+    const [w, h] = resolutionSelect.value.split(':').map(Number);
+    videoBps = videoBps * (w * h) / (preview.videoWidth * preview.videoHeight);
+  }
+
+  const audioBps  = muteAudio.checked ? 0 : AUDIO_BPS;
+  const estBytes  = (videoBps + audioBps) * trimDur / 8;
+  const refBytes  = totalSize * (trimDur / state.totalDuration);
+  const pct       = Math.round((estBytes / refBytes) * 100) - 100;
+  const cls       = pct > 0 ? 'estimate-up' : 'estimate-down';
+
+  estimateText.innerHTML =
+    `길이 <span class="estimate-val">${formatTimeShort(trimDur)}</span>` +
+    ` &nbsp;→&nbsp; 예상 용량 <span class="estimate-val">${formatFileSize(estBytes)}</span>` +
+    ` <span class="${cls}">(${pct > 0 ? '+' : ''}${pct}%)</span>`;
+  estimateBar.classList.remove('hidden');
 }
 
 // ── Timeline helpers ───────────────────────────────────────────────────────
 function posToTime(x) {
   const rect = timelineTrack.getBoundingClientRect();
-  const frac = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
-  return frac * state.duration;
+  return Math.max(0, Math.min(1, (x - rect.left) / rect.width)) * state.totalDuration;
 }
-
 function timeToFrac(t) {
-  return state.duration > 0 ? t / state.duration : 0;
+  return state.totalDuration > 0 ? t / state.totalDuration : 0;
 }
 
 function updateTimeline() {
-  const startFrac = timeToFrac(state.trimStart);
-  const endFrac   = timeToFrac(state.trimEnd);
+  const sf = timeToFrac(state.trimStart);
+  const ef = timeToFrac(state.trimEnd);
+  handleStart.style.left  = `${sf * 100}%`;
+  handleEnd.style.left    = `${ef * 100}%`;
+  trimRegion.style.left   = `${sf * 100}%`;
+  trimRegion.style.width  = `${(ef - sf) * 100}%`;
+  labelStart.textContent  = formatTime(state.trimStart);
+  labelEnd.textContent    = formatTime(state.trimEnd);
+  trimStartInput.value    = formatTime(state.trimStart);
+  trimEndInput.value      = formatTime(state.trimEnd);
+  trimDuration.textContent = `선택 구간: ${formatTime(state.trimEnd - state.trimStart)}`;
+  updateEstimate();
 
-  handleStart.style.left = `${startFrac * 100}%`;
-  handleEnd.style.left   = `${endFrac * 100}%`;
-  trimRegion.style.left  = `${startFrac * 100}%`;
-  trimRegion.style.width = `${(endFrac - startFrac) * 100}%`;
-
-  labelStart.textContent = formatTime(state.trimStart);
-  labelEnd.textContent   = formatTime(state.trimEnd);
-
-  trimStartInput.value = formatTime(state.trimStart);
-  trimEndInput.value   = formatTime(state.trimEnd);
-
-  const dur = state.trimEnd - state.trimStart;
-  trimDuration.textContent = `선택 구간: ${formatTime(dur)}`;
+  // 현재 위치가 범위 밖이면 보정
+  const now = getGlobalTime();
+  if      (now < state.trimStart) seekToGlobal(state.trimStart);
+  else if (now > state.trimEnd)   seekToGlobal(state.trimEnd);
 }
 
 function updatePlayhead() {
-  const frac = timeToFrac(preview.currentTime);
-  playhead.style.left = `${frac * 100}%`;
-  labelCurrent.textContent = formatTime(preview.currentTime);
+  const g = getGlobalTime();
+  playhead.style.left = `${timeToFrac(g) * 100}%`;
+  labelCurrent.textContent = formatTime(g);
 }
 
-// ── File load ──────────────────────────────────────────────────────────────
-function loadFile(file) {
-  if (!file || !file.type.startsWith('video/')) return;
-  state.file = file;
-
-  const url = URL.createObjectURL(file);
-  preview.src = url;
-
-  preview.onloadedmetadata = () => {
-    state.duration = preview.duration;
-    state.trimStart = 0;
-    state.trimEnd = state.duration;
-
-    fileInfo.innerHTML = `
-      <span><strong>${file.name}</strong></span>
-      <span>크기: <strong>${formatFileSize(file.size)}</strong></span>
-      <span>길이: <strong>${formatTime(state.duration)}</strong></span>
-      <span>해상도: <strong>${preview.videoWidth}×${preview.videoHeight}</strong></span>
-    `;
-
-    updateTimeline();
-    updatePlayhead();
-
-    dropZone.classList.add('hidden');
-    editor.classList.remove('hidden');
-  };
+function updatePlayPauseUI() {
+  const playing = !preview.paused;
+  iconPlay.classList.toggle('hidden', playing);
+  iconPause.classList.toggle('hidden', !playing);
+  bigPlayIcon.classList.toggle('playing', playing);
 }
 
 // ── Drag & drop ────────────────────────────────────────────────────────────
-dropZone.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  dropZone.classList.add('drag-over');
-});
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-dropZone.addEventListener('drop', (e) => {
-  e.preventDefault();
-  dropZone.classList.remove('drag-over');
-  loadFile(e.dataTransfer.files[0]);
-});
-fileInput.addEventListener('change', () => loadFile(fileInput.files[0]));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); addFiles(e.dataTransfer.files); });
+fileInput.addEventListener('change', () => addFiles(fileInput.files));
+addFilesBtn.addEventListener('click', () => addFileInput.click());
+addFileInput.addEventListener('change', () => addFiles(addFileInput.files));
+
+// 에디터 영역에도 드래그&드롭 허용
+editor.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); });
+editor.addEventListener('drop', e => { e.preventDefault(); e.stopPropagation(); addFiles(e.dataTransfer.files); });
 
 // ── Video events ───────────────────────────────────────────────────────────
-preview.addEventListener('timeupdate', updatePlayhead);
-
-// Click on timeline to seek
-timelineTrack.addEventListener('click', (e) => {
-  if (state.dragging) return;
-  preview.currentTime = posToTime(e.clientX);
+preview.addEventListener('timeupdate', () => {
+  updatePlayhead();
+  if (!preview.paused && getGlobalTime() >= state.trimEnd) {
+    preview.pause();
+    const local = state.trimEnd - state.segments[state.segIdx].cumStart;
+    preview.currentTime = Math.min(local, preview.duration);
+  }
+});
+preview.addEventListener('play',   updatePlayPauseUI);
+preview.addEventListener('pause',  updatePlayPauseUI);
+preview.addEventListener('ended', () => {
+  const nextIdx  = state.segIdx + 1;
+  const segEnd   = state.segments[state.segIdx].cumStart + state.segments[state.segIdx].duration;
+  if (nextIdx < state.segments.length && segEnd < state.trimEnd - 0.01) {
+    seekToGlobal(state.segments[nextIdx].cumStart, true);
+  } else {
+    updatePlayPauseUI();
+  }
 });
 
-// ── Timeline drag handles ──────────────────────────────────────────────────
-function onHandleMouseDown(e, which) {
-  e.preventDefault();
-  e.stopPropagation();
-  state.dragging = which;
+// ── Player controls ────────────────────────────────────────────────────────
+function togglePlay() {
+  if (!preview.paused) { preview.pause(); return; }
+  const now = getGlobalTime();
+  if (now < state.trimStart || now >= state.trimEnd) {
+    seekToGlobal(state.trimStart, true);
+  } else {
+    preview.play().catch(() => {});
+  }
 }
 
-handleStart.addEventListener('mousedown', (e) => onHandleMouseDown(e, 'start'));
-handleEnd.addEventListener('mousedown',   (e) => onHandleMouseDown(e, 'end'));
-handleStart.addEventListener('touchstart', (e) => { onHandleMouseDown(e, 'start'); }, { passive: false });
-handleEnd.addEventListener('touchstart',   (e) => { onHandleMouseDown(e, 'end'); }, { passive: false });
+playerPlayBtn.addEventListener('click', togglePlay);
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+    e.preventDefault(); togglePlay();
+  }
+});
 
-function getClientX(e) {
-  return e.touches ? e.touches[0].clientX : e.clientX;
-}
+// ── Timeline click / drag ──────────────────────────────────────────────────
+timelineTrack.addEventListener('click', e => {
+  if (state.dragging) return;
+  const t = posToTime(e.clientX);
+  seekToGlobal(Math.max(state.trimStart, Math.min(t, state.trimEnd)));
+});
 
-document.addEventListener('mousemove', (e) => onDragMove(e));
-document.addEventListener('touchmove', (e) => onDragMove(e), { passive: false });
-document.addEventListener('mouseup',   () => { state.dragging = null; });
-document.addEventListener('touchend',  () => { state.dragging = null; });
+function onHandleDown(e, which) { e.preventDefault(); e.stopPropagation(); state.dragging = which; }
+handleStart.addEventListener('mousedown',  e => onHandleDown(e, 'start'));
+handleEnd.addEventListener('mousedown',    e => onHandleDown(e, 'end'));
+handleStart.addEventListener('touchstart', e => onHandleDown(e, 'start'), { passive: false });
+handleEnd.addEventListener('touchstart',   e => onHandleDown(e, 'end'),   { passive: false });
+
+const getClientX = e => e.touches ? e.touches[0].clientX : e.clientX;
+document.addEventListener('mousemove', onDragMove);
+document.addEventListener('touchmove', onDragMove, { passive: false });
+document.addEventListener('mouseup',  () => { state.dragging = null; });
+document.addEventListener('touchend', () => { state.dragging = null; });
 
 function onDragMove(e) {
   if (!state.dragging) return;
@@ -184,21 +396,17 @@ function onDragMove(e) {
   if (state.dragging === 'start') {
     state.trimStart = Math.max(0, Math.min(t, state.trimEnd - 0.1));
   } else {
-    state.trimEnd = Math.min(state.duration, Math.max(t, state.trimStart + 0.1));
+    state.trimEnd = Math.min(state.totalDuration, Math.max(t, state.trimStart + 0.1));
   }
   updateTimeline();
 }
 
-// ── "현재↗" set-time buttons ───────────────────────────────────────────────
+// ── "현재↗" buttons ────────────────────────────────────────────────────────
 document.querySelectorAll('.set-btn').forEach(btn => {
   btn.addEventListener('click', () => {
-    const target = btn.dataset.target;
-    const t = preview.currentTime;
-    if (target === 'start') {
-      state.trimStart = Math.min(t, state.trimEnd - 0.1);
-    } else {
-      state.trimEnd = Math.max(t, state.trimStart + 0.1);
-    }
+    const t = getGlobalTime();
+    if (btn.dataset.target === 'start') state.trimStart = Math.min(t, state.trimEnd - 0.1);
+    else                                state.trimEnd   = Math.max(t, state.trimStart + 0.1);
     updateTimeline();
   });
 });
@@ -206,54 +414,80 @@ document.querySelectorAll('.set-btn').forEach(btn => {
 // ── Manual time inputs ─────────────────────────────────────────────────────
 trimStartInput.addEventListener('change', () => {
   const t = parseTime(trimStartInput.value);
-  if (t !== null && t >= 0 && t < state.trimEnd) {
-    state.trimStart = t;
-    updateTimeline();
-  } else {
-    trimStartInput.value = formatTime(state.trimStart);
-  }
+  if (t !== null && t >= 0 && t < state.trimEnd) { state.trimStart = t; updateTimeline(); }
+  else trimStartInput.value = formatTime(state.trimStart);
 });
-
 trimEndInput.addEventListener('change', () => {
   const t = parseTime(trimEndInput.value);
-  if (t !== null && t > state.trimStart && t <= state.duration) {
-    state.trimEnd = t;
-    updateTimeline();
-  } else {
-    trimEndInput.value = formatTime(state.trimEnd);
-  }
+  if (t !== null && t > state.trimStart && t <= state.totalDuration) { state.trimEnd = t; updateTimeline(); }
+  else trimEndInput.value = formatTime(state.trimEnd);
 });
 
-// ── Audio controls ─────────────────────────────────────────────────────────
+// ── Volume ─────────────────────────────────────────────────────────────────
+function setVolume(pct) {
+  const v = Math.max(0, Math.min(200, pct));
+  preview.volume = Math.min(v / 100, 1);
+  preview.muted  = v === 0;
+  volumeSlider.value = v;
+  volumeValue.textContent = v + '%';
+}
 muteAudio.addEventListener('change', () => {
   volumeRow.classList.toggle('disabled', muteAudio.checked);
+  preview.muted = muteAudio.checked;
+  updateEstimate();
+});
+volumeSlider.addEventListener('input', () => setVolume(parseInt(volumeSlider.value)));
+bitrateSelect.addEventListener('change', updateEstimate);
+resolutionSelect.addEventListener('change', updateEstimate);
+
+// ── Video overlay (click + hold 2x) ───────────────────────────────────────
+let holdTimer = null, isHolding = false;
+videoOverlay.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  holdTimer = setTimeout(() => {
+    isHolding = true; preview.playbackRate = 2;
+    speedBadge.classList.remove('hidden');
+    if (preview.paused) preview.play().catch(() => {});
+  }, 300);
+});
+videoOverlay.addEventListener('click', () => { if (!isHolding) togglePlay(); });
+function stopHold() {
+  if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+  if (isHolding) { isHolding = false; preview.playbackRate = 1; speedBadge.classList.add('hidden'); }
+}
+videoOverlay.addEventListener('mouseup', stopHold);
+videoOverlay.addEventListener('mouseleave', stopHold);
+videoOverlay.addEventListener('touchstart', () => {
+  holdTimer = setTimeout(() => {
+    isHolding = true; preview.playbackRate = 2;
+    speedBadge.classList.remove('hidden');
+    if (preview.paused) preview.play().catch(() => {});
+  }, 300);
+}, { passive: true });
+videoOverlay.addEventListener('touchend', () => { if (!isHolding) togglePlay(); stopHold(); }, { passive: true });
+
+// ── FFmpeg ─────────────────────────────────────────────────────────────────
+ffmpeg.on('log', ({ message }) => console.log('[ffmpeg]', message));
+ffmpeg.on('progress', ({ progress }) => {
+  const pct = Math.round(Math.min(progress, 1) * 100);
+  progressFill.style.width = pct + '%';
+  progressText.textContent = `처리 중... ${pct}%`;
 });
 
-volumeSlider.addEventListener('input', () => {
-  volumeValue.textContent = volumeSlider.value + '%';
-});
-
-// ── FFmpeg load ────────────────────────────────────────────────────────────
 async function ensureFFmpeg() {
   if (ffmpegLoaded) return;
-  const base = import.meta.env.BASE_URL;
-  ffmpeg.on('log', ({ message }) => console.log('[ffmpeg]', message));
-  ffmpeg.on('progress', ({ progress }) => {
-    const pct = Math.round(Math.min(progress, 1) * 100);
-    progressFill.style.width = pct + '%';
-    progressText.textContent = `처리 중... ${pct}%`;
-  });
+  if (typeof SharedArrayBuffer === 'undefined')
+    throw new Error('SharedArrayBuffer를 사용할 수 없습니다. Cross-Origin-Isolation 헤더가 필요합니다.');
+  const base = import.meta.env.BASE_URL, origin = window.location.origin;
   await ffmpeg.load({
-    coreURL: await toBlobURL(`${base}ffmpeg-core.js`, 'text/javascript'),
-    wasmURL: await toBlobURL(`${base}ffmpeg-core.wasm`, 'application/wasm'),
+    coreURL: `${origin}${base}ffmpeg-core.js`,
+    wasmURL: `${origin}${base}ffmpeg-core.wasm`,
   });
   ffmpegLoaded = true;
 }
 
-// ── Process ────────────────────────────────────────────────────────────────
 processBtn.addEventListener('click', async () => {
-  if (!state.file) return;
-
+  if (!state.segments.length) return;
   processBtn.disabled = true;
   progressSection.classList.remove('hidden');
   progressFill.style.width = '0%';
@@ -261,53 +495,43 @@ processBtn.addEventListener('click', async () => {
 
   try {
     await ensureFFmpeg();
-    progressText.textContent = '파일 읽는 중...';
 
-    const inputName = 'input.' + (state.file.name.split('.').pop() || 'mp4');
-    await ffmpeg.writeFile(inputName, await fetchFile(state.file));
+    const doTrim      = state.trimStart > 0.01 || state.trimEnd < state.totalDuration - 0.01;
+    const doVolume    = !muteAudio.checked && parseInt(volumeSlider.value) !== 100;
+    const doBitrate   = bitrateSelect.value !== '';
+    const doRes       = resolutionSelect.value !== '';
+    const needReencode = doVolume || doBitrate || doRes;
+    const exts        = state.segments.map(s => s.file.name.split('.').pop() || 'mp4');
+
+    // Write input files
+    for (let i = 0; i < state.segments.length; i++) {
+      progressText.textContent = `파일 읽는 중... (${i+1}/${state.segments.length})`;
+      await ffmpeg.writeFile(`input${i}.${exts[i]}`, await fetchFile(state.segments[i].file));
+    }
 
     const args = [];
-    const doTrim = state.trimStart > 0.01 || state.trimEnd < state.duration - 0.01;
-    const doVolume = !muteAudio.checked && parseInt(volumeSlider.value) !== 100;
-    const doBitrate = bitrateSelect.value !== '';
-    const doRes = resolutionSelect.value !== '';
-    const needReencode = doVolume || doBitrate || doRes;
 
-    // Input-side seek for fast trim
-    if (doTrim) {
-      args.push('-ss', state.trimStart.toFixed(3));
-    }
-    args.push('-i', inputName);
-    if (doTrim) {
-      args.push('-t', (state.trimEnd - state.trimStart).toFixed(3));
+    if (state.segments.length === 1) {
+      if (doTrim) args.push('-ss', state.trimStart.toFixed(3));
+      args.push('-i', `input0.${exts[0]}`);
+      if (doTrim) args.push('-t', (state.trimEnd - state.trimStart).toFixed(3));
+    } else {
+      // 멀티파일: concat demuxer
+      const list = state.segments.map((_, i) => `file 'input${i}.${exts[i]}'`).join('\n');
+      await ffmpeg.writeFile('concat.txt', new TextEncoder().encode(list));
+      if (doTrim) args.push('-ss', state.trimStart.toFixed(3));
+      args.push('-f', 'concat', '-safe', '0', '-i', 'concat.txt');
+      if (doTrim) args.push('-t', (state.trimEnd - state.trimStart).toFixed(3));
     }
 
-    // Audio
     if (muteAudio.checked) {
       args.push('-an');
     } else if (doVolume) {
       args.push('-af', `volume=${(parseInt(volumeSlider.value) / 100).toFixed(2)}`);
     }
-
-    // Video filters
-    const vfilters = [];
-    if (doRes) {
-      vfilters.push(`scale=${resolutionSelect.value}:flags=lanczos`);
-    }
-
-    if (vfilters.length > 0) {
-      args.push('-vf', vfilters.join(','));
-    }
-
-    if (doBitrate) {
-      args.push('-b:v', bitrateSelect.value);
-    }
-
-    // Codec: copy if no re-encode needed, otherwise let ffmpeg choose
-    if (!needReencode) {
-      if (!muteAudio.checked) args.push('-c', 'copy');
-      else args.push('-c:v', 'copy');
-    }
+    if (doRes)     args.push('-vf', `scale=${resolutionSelect.value}:flags=lanczos`);
+    if (doBitrate) args.push('-b:v', bitrateSelect.value);
+    if (!needReencode) args.push('-c', muteAudio.checked ? 'copy' : 'copy');
 
     args.push('-y', 'output.mp4');
 
@@ -316,25 +540,23 @@ processBtn.addEventListener('click', async () => {
 
     progressText.textContent = '파일 준비 중...';
     const data = await ffmpeg.readFile('output.mp4');
-    const blob = new Blob([data.buffer], { type: 'video/mp4' });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement('a');
-    a.href = url;
-    const baseName = state.file.name.replace(/\.[^.]+$/, '');
-    a.download = `${baseName}_edited.mp4`;
+    const url  = URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' }));
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = (state.segments.length > 1 ? state.segments[0].file.name.replace(/\.[^.]+$/, '') + '_concat' : state.segments[0].file.name.replace(/\.[^.]+$/, '')) + '_edited.mp4';
     a.click();
     URL.revokeObjectURL(url);
 
     progressFill.style.width = '100%';
     progressText.textContent = '완료! 다운로드가 시작됩니다.';
 
-    // Cleanup ffmpeg FS
-    await ffmpeg.deleteFile(inputName).catch(() => {});
+    for (let i = 0; i < state.segments.length; i++) await ffmpeg.deleteFile(`input${i}.${exts[i]}`).catch(() => {});
+    if (state.segments.length > 1) await ffmpeg.deleteFile('concat.txt').catch(() => {});
     await ffmpeg.deleteFile('output.mp4').catch(() => {});
   } catch (err) {
     console.error(err);
-    progressText.textContent = '오류: ' + err.message;
+    progressText.textContent = '오류: ' + (err?.message || String(err));
+    progressFill.style.width = '0%';
   } finally {
     processBtn.disabled = false;
   }

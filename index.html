@@ -29,7 +29,7 @@
           </svg>
           <p>MP4 파일을 드래그하거나 클릭하여 선택</p>
           <span class="drop-hint">MP4, MOV, AVI, WebM 지원</span>
-          <input type="file" id="file-input" accept="video/*" />
+          <input type="file" id="file-input" accept="video/*" multiple />
         </div>
 
         <!-- Editor (shown after file load) -->
@@ -39,18 +39,39 @@
           <div class="video-panel">
             <div class="video-wrapper">
               <video id="preview" preload="metadata"></video>
+              <div class="video-overlay" id="video-overlay">
+                <div class="big-play-icon" id="big-play-icon">
+                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                </div>
+                <div class="speed-badge hidden" id="speed-badge">2×</div>
+              </div>
             </div>
 
-            <!-- File info -->
-            <div id="file-info" class="file-info"></div>
+            <!-- File list -->
+            <div class="file-list-wrap">
+              <div id="file-list" class="file-list"></div>
+              <div class="file-list-footer">
+                <span id="file-list-total" class="file-list-total"></span>
+                <button id="add-files-btn" class="add-files-btn">+ 파일 추가</button>
+                <input type="file" id="add-file-input" accept="video/*" multiple hidden />
+              </div>
+            </div>
 
-            <!-- Timeline scrubber -->
+            <!-- Timeline with integrated play + volume -->
             <div id="timeline" class="timeline">
-              <div class="timeline-track" id="timeline-track">
-                <div class="playhead" id="playhead"></div>
-                <div class="trim-region" id="trim-region"></div>
-                <div class="trim-handle trim-handle-start" id="handle-start" title="시작 지점 드래그"></div>
-                <div class="trim-handle trim-handle-end" id="handle-end" title="끝 지점 드래그"></div>
+              <div class="timeline-row">
+                <!-- Play/pause -->
+                <button class="tl-play-btn" id="player-play-btn" title="재생/일시정지 (Space)">
+                  <svg id="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                  <svg id="icon-pause" viewBox="0 0 24 24" fill="currentColor" class="hidden"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>
+                </button>
+                <!-- Trim track -->
+                <div class="timeline-track" id="timeline-track">
+                  <div class="playhead" id="playhead"></div>
+                  <div class="trim-region" id="trim-region"></div>
+                  <div class="trim-handle trim-handle-start" id="handle-start" title="시작 지점 드래그"></div>
+                  <div class="trim-handle trim-handle-end" id="handle-end" title="끝 지점 드래그"></div>
+                </div>
               </div>
               <div class="timeline-labels">
                 <span id="label-start">0:00.000</span>
@@ -148,6 +169,11 @@
               </div>
             </section>
 
+            <!-- Estimate -->
+            <div id="estimate-bar" class="estimate-bar hidden">
+              <span id="estimate-text"></span>
+            </div>
+
             <!-- Process button -->
             <button id="process-btn" class="process-btn">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -169,6 +195,8 @@
       </main>
     </div>
 
+    <!-- UMD build loaded as classic script — creates a classic worker that supports importScripts -->
+    <script src="/ffmpeg-umd.js"></script>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
