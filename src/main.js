@@ -320,9 +320,9 @@ function updatePlayPauseUI() {
   iconPause.classList.toggle('hidden', !playing);
 }
 
-function flashOverlay(playing) {
-  bigIconPlay.classList.toggle('hidden', playing);
-  bigIconPause.classList.toggle('hidden', !playing);
+function flashOverlay(willPlay) {
+  bigIconPlay.classList.toggle('hidden', !willPlay);
+  bigIconPause.classList.toggle('hidden', willPlay);
   bigPlayIcon.classList.remove('flash');
   void bigPlayIcon.offsetWidth; // reflow to restart animation
   bigPlayIcon.classList.add('flash');
