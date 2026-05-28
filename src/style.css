@@ -141,24 +141,29 @@ body { margin: 0; }
   justify-content: center;
 }
 .big-play-icon {
-  width: 64px;
-  height: 64px;
-  background: rgba(0, 0, 0, 0.55);
+  width: 72px;
+  height: 72px;
+  background: rgba(0, 0, 0, 0.5);
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: opacity 0.2s, transform 0.15s;
-  backdrop-filter: blur(4px);
-}
-.big-play-icon svg { width: 32px; height: 32px; color: #fff; margin-left: 3px; }
-.video-wrapper:hover .big-play-icon { opacity: 1; }
-.big-play-icon.playing {
   opacity: 0;
   pointer-events: none;
+  backdrop-filter: blur(4px);
 }
-.video-wrapper:hover .big-play-icon.playing { opacity: 0.7; }
-.big-play-icon:hover { transform: scale(1.08); }
+.big-play-icon svg { width: 34px; height: 34px; color: #fff; }
+.big-play-icon svg:first-child { margin-left: 4px; }
+
+@keyframes icon-flash {
+  0%   { opacity: 0; transform: scale(0.75); }
+  15%  { opacity: 1; transform: scale(1); }
+  70%  { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.15); }
+}
+.big-play-icon.flash {
+  animation: icon-flash 0.5s ease-out forwards;
+}
 
 .speed-badge {
   position: absolute;

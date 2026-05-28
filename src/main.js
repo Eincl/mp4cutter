@@ -29,6 +29,8 @@ const speedBadge     = document.getElementById('speed-badge');
 const playerPlayBtn  = document.getElementById('player-play-btn');
 const iconPlay       = document.getElementById('icon-play');
 const iconPause      = document.getElementById('icon-pause');
+const bigIconPlay    = document.getElementById('big-icon-play');
+const bigIconPause   = document.getElementById('big-icon-pause');
 const fileListEl     = document.getElementById('file-list');
 const fileListTotal  = document.getElementById('file-list-total');
 const timelineTrack  = document.getElementById('timeline-track');
@@ -316,7 +318,15 @@ function updatePlayPauseUI() {
   const playing = !preview.paused;
   iconPlay.classList.toggle('hidden', playing);
   iconPause.classList.toggle('hidden', !playing);
-  bigPlayIcon.classList.toggle('playing', playing);
+}
+
+function flashOverlay(playing) {
+  bigIconPlay.classList.toggle('hidden', playing);
+  bigIconPause.classList.toggle('hidden', !playing);
+  bigPlayIcon.classList.remove('flash');
+  void bigPlayIcon.offsetWidth; // reflow to restart animation
+  bigPlayIcon.classList.add('flash');
+  bigPlayIcon.addEventListener('animationend', () => bigPlayIcon.classList.remove('flash'), { once: true });
 }
 
 // ── Drag & drop ────────────────────────────────────────────────────────────
@@ -354,7 +364,9 @@ preview.addEventListener('ended', () => {
 
 // ── Player controls ────────────────────────────────────────────────────────
 function togglePlay() {
-  if (!preview.paused) { preview.pause(); return; }
+  const willPlay = preview.paused;
+  flashOverlay(willPlay);
+  if (!willPlay) { preview.pause(); return; }
   const now = getGlobalTime();
   if (now < state.trimStart || now >= state.trimEnd) {
     seekToGlobal(state.trimStart, true);
