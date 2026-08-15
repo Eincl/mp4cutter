@@ -488,8 +488,10 @@ ffmpeg.on('progress', ({ progress }) => {
 
 async function ensureFFmpeg() {
   if (ffmpegLoaded) return;
-  if (typeof SharedArrayBuffer === 'undefined')
-    throw new Error('SharedArrayBuffer를 사용할 수 없습니다. Cross-Origin-Isolation 헤더가 필요합니다.');
+  // @ffmpeg/core는 싱글스레드 빌드라 SharedArrayBuffer가 없어도 동작한다.
+  // (core-mt로 바꾸는 경우에만 cross-origin isolation이 필수)
+  if (!window.crossOriginIsolated)
+    console.warn('[ffmpeg] cross-origin isolated 아님 — 싱글스레드로 동작합니다.');
   const base = import.meta.env.BASE_URL, origin = window.location.origin;
   await ffmpeg.load({
     coreURL: `${origin}${base}ffmpeg-core.js`,
@@ -552,12 +554,16 @@ processBtn.addEventListener('click', async () => {
 
     progressText.textContent = '파일 준비 중...';
     const data = await ffmpeg.readFile('output.mp4');
-    const url  = URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' }));
+    const url  = URL.createObjectURL(new Blob([data], { type: 'video/mp4' }));
     const a    = document.createElement('a');
     a.href     = url;
     a.download = (state.segments.length > 1 ? state.segments[0].file.name.replace(/\.[^.]+$/, '') + '_concat' : state.segments[0].file.name.replace(/\.[^.]+$/, '')) + '_edited.mp4';
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    // Chrome은 다운로드가 blob을 다 읽기 전에 revoke하면 중단시킨다. 큰 파일도
+    // 안전하도록 넉넉히 미룬다 (탭을 닫으면 어차피 함께 해제된다).
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
 
     progressFill.style.width = '100%';
     progressText.textContent = '완료! 다운로드가 시작됩니다.';

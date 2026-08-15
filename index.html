@@ -4,15 +4,45 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MP4 Cutter — 클라이언트 영상 편집</title>
+    <!--
+      COOP/COEP 헤더를 못 붙이는 정적 호스팅(GitHub Pages)에서 cross-origin isolation을 확보한다.
+      반드시 페이지 스크립트로 로드해야 한다 — 이 파일의 window 쪽 코드가 스스로 SW를 등록하고
+      한 번 reload 해야 이미 로드된 문서에 헤더가 적용된다. register()로 직접 등록하면 reload가
+      일어나지 않아 COI가 영원히 켜지지 않는다.
+    -->
+    <script id="coi-sw" src="/coi-serviceworker.js"></script>
+    <script>
+      // 스테일 서비스워커 자가 치유.
+      // SW 파일 내용이 바뀐 경우는 브라우저가 알아서 갱신한다 — coi-serviceworker가
+      // skipWaiting + clients.claim을 하므로 즉시 적용된다. 자동으로 처리되지 않는 건
+      // 등록 URL/스코프 자체가 바뀐 경우로, 옛 등록이 그대로 남아 새 것과 공존한다.
+      (() => {
+        if (!('serviceWorker' in navigator)) return;
+        const expected = document.getElementById('coi-sw').src;
+        const GUARD = 'coi-sw-healed';
+        const reloadOnce = () => {
+          // 언레지스터 후에도 격리가 안 걸리는 브라우저에서 무한 리로드가 되지 않도록 세션당 1회만
+          if (sessionStorage.getItem(GUARD)) return;
+          sessionStorage.setItem(GUARD, '1');
+          location.reload();
+        };
+
+        navigator.serviceWorker.getRegistrations().then(regs => {
+          // 방금 등록된 것과 URL이 다른 등록만 고른다 (coi-serviceworker의 register()는
+          // 비동기라 여기 목록에 섞여 들어올 수 있으므로 URL 비교가 필요하다)
+          const stale = regs.filter(r => {
+            const sw = r.active || r.waiting || r.installing;
+            return sw && sw.scriptURL !== expected;
+          });
+          if (!stale.length) return;
+          console.warn('[coi] 구버전 서비스워커 제거:', stale.map(r => r.scope));
+          Promise.all(stale.map(r => r.unregister())).then(reloadOnce);
+        });
+      })();
+    </script>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <script>
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('./coi-serviceworker.js').catch(() => {});
-      }
-    </script>
-
     <div id="app">
       <header class="header">
         <div class="header-inner">

@@ -28,6 +28,22 @@
 서버 없이 동작하는 핵심은 FFmpeg을 WebAssembly로 컴파일한 `@ffmpeg/core`입니다.  
 `@ffmpeg/ffmpeg`는 모듈 워커 문제를 피하기 위해 UMD 빌드를 `<script>` 태그로 로드합니다.
 
+### cross-origin isolation
+
+현재 쓰는 `@ffmpeg/core`는 **싱글스레드 빌드라 `SharedArrayBuffer`가 필요 없습니다.**
+따라서 cross-origin isolation 없이도 모든 브라우저에서 동작합니다. Safari는 COI 없이도
+`SharedArrayBuffer`를 노출하지만 Chrome은 감추므로, SAB를 전제로 코드를 짜면 Chrome에서만
+깨집니다.
+
+`coi-serviceworker`는 COOP/COEP 헤더를 붙일 수 없는 GitHub Pages에서 COI를 확보하기 위해
+남겨둔 것으로, 멀티스레드 빌드(`@ffmpeg/core-mt`)로 전환할 때 필요합니다.
+
+> **주의** — 이 라이브러리는 반드시 `<script src="...">`로 로드해야 합니다.
+> `navigator.serviceWorker.register()`로 직접 등록하면 서비스워커 쪽 코드만 실행되고,
+> 등록 직후의 `location.reload()`가 일어나지 않습니다. 서비스워커는 이미 로드된 문서에
+> 헤더를 소급 적용할 수 없으므로 이 리로드가 없으면 COI가 영원히 켜지지 않습니다.
+> (그래서 첫 방문 시 리로드가 한 번 일어나는 것은 정상입니다.)
+
 ## 로컬 실행
 
 ```bash
