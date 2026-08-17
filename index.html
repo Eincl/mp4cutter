@@ -76,6 +76,8 @@
                 </div>
                 <div class="speed-badge hidden" id="speed-badge">2×</div>
               </div>
+              <div class="capture-flash" id="capture-flash"></div>
+              <div class="capture-toast hidden" id="capture-toast"></div>
             </div>
 
             <!-- File list -->
@@ -103,6 +105,19 @@
                   <div class="trim-handle trim-handle-start" id="handle-start" title="시작 지점 드래그"></div>
                   <div class="trim-handle trim-handle-end" id="handle-end" title="끝 지점 드래그"></div>
                 </div>
+                <!-- Frame step + capture -->
+                <button class="tl-icon-btn" id="frame-prev-btn" title="이전 프레임 (← / Shift+← 1초)">
+                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 5v14l-9-7z"/><rect x="6" y="5" width="2" height="14"/></svg>
+                </button>
+                <button class="tl-icon-btn" id="frame-next-btn" title="다음 프레임 (→ / Shift+→ 1초)">
+                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 5v14l9-7z"/><rect x="16" y="5" width="2" height="14"/></svg>
+                </button>
+                <button class="tl-icon-btn tl-capture-btn" id="capture-btn" title="현재 화면 캡쳐 저장 (C)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 8a2 2 0 0 1 2-2h2.5l1.2-2h6.6l1.2 2H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8z" stroke-linejoin="round"/>
+                    <circle cx="12" cy="12.5" r="3.5"/>
+                  </svg>
+                </button>
               </div>
               <div class="timeline-labels">
                 <span id="label-start">0:00.000</span>

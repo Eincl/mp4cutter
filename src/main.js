@@ -31,6 +31,11 @@ const iconPlay       = document.getElementById('icon-play');
 const iconPause      = document.getElementById('icon-pause');
 const bigIconPlay    = document.getElementById('big-icon-play');
 const bigIconPause   = document.getElementById('big-icon-pause');
+const captureBtn     = document.getElementById('capture-btn');
+const captureFlash   = document.getElementById('capture-flash');
+const captureToast   = document.getElementById('capture-toast');
+const framePrevBtn   = document.getElementById('frame-prev-btn');
+const frameNextBtn   = document.getElementById('frame-next-btn');
 const fileListEl     = document.getElementById('file-list');
 const fileListTotal  = document.getElementById('file-list-total');
 const timelineTrack  = document.getElementById('timeline-track');
@@ -189,6 +194,7 @@ function renderFileList() {
     });
     fileListEl.appendChild(div);
   });
+  updateFrameBtnTitles();   // 파일마다 fps가 다를 수 있다
   const totalSize = state.segments.reduce((a, s) => a + s.file.size, 0);
   fileListTotal.textContent =
     `${state.segments.length}개 파일 · ${formatTime(state.totalDuration)} · ${formatFileSize(totalSize)}`;
@@ -222,8 +228,8 @@ function addFiles(fileList) {
     const v = document.createElement('video');
     v.preload = 'metadata';
     v.src = objectURL;
-    v.onloadedmetadata = () => resolve({ file, duration: v.duration, cumStart: 0, objectURL });
-    v.onerror = ()       => resolve({ file, duration: 0,           cumStart: 0, objectURL });
+    v.onloadedmetadata = () => resolve({ file, duration: v.duration, cumStart: 0, objectURL, frameDur: null });
+    v.onerror = ()       => resolve({ file, duration: 0,           cumStart: 0, objectURL, frameDur: null });
   }))).then(newSegs => {
     const seen = new Set(state.segments.map(s => s.file.name));
     const merged = [
@@ -246,8 +252,66 @@ function addFiles(fileList) {
       updatePlayPauseUI();
       dropZone.classList.add('hidden');
       editor.classList.remove('hidden');
+      // 프레임 간격 측정은 화면을 막지 않도록 에디터를 띄운 뒤에 돌린다
+      state.segments.forEach(measureFrameDuration);
     }, { once: true });
   });
+}
+
+// ── Frame duration 측정 ────────────────────────────────────────────────────
+// 브라우저는 fps를 알려주지 않는다. requestVideoFrameCallback으로 실제 프레임이
+// 표시되는 간격(mediaTime 차이)을 재서 정확한 한 프레임 크기를 구한다.
+// 프레임이 드롭되면 간격이 배수로 벌어지므로 최솟값을 쓴다.
+const FRAME_DUR_FALLBACK = 1 / 30;
+const MEASURE_SAMPLES = 12;
+const MEASURE_TIMEOUT = 2000;
+
+function measureFrameDuration(seg) {
+  if (seg.frameDur || seg.measuring) return;
+  const probe = document.createElement('video');
+  if (!('requestVideoFrameCallback' in probe)) return;
+  seg.measuring = true;
+
+  let prev = null, minDelta = Infinity, samples = 0, done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    probe.pause();
+    probe.removeAttribute('src');
+    probe.load();          // 디코더 해제
+    seg.measuring = false;
+    if (minDelta !== Infinity && minDelta > 0.001) {
+      seg.frameDur = minDelta;
+      updateFrameBtnTitles();
+    }
+  };
+
+  probe.src = seg.objectURL;
+  probe.muted = true;      // muted라 사용자 제스처 없이도 재생된다
+  probe.playsInline = true;
+  probe.requestVideoFrameCallback(function tick(_, md) {
+    if (prev !== null) {
+      const d = md.mediaTime - prev;
+      if (d > 0.001) { minDelta = Math.min(minDelta, d); samples++; }
+    }
+    prev = md.mediaTime;
+    if (samples >= MEASURE_SAMPLES) return finish();
+    probe.requestVideoFrameCallback(tick);
+  });
+  probe.play().catch(finish);
+  const timer = setTimeout(finish, MEASURE_TIMEOUT);
+}
+
+function currentFrameDur() {
+  return state.segments[state.segIdx]?.frameDur || FRAME_DUR_FALLBACK;
+}
+
+function updateFrameBtnTitles() {
+  const seg = state.segments[state.segIdx];
+  const fps = seg?.frameDur ? `${(1 / seg.frameDur).toFixed(2)}fps` : '30fps 가정';
+  framePrevBtn.title = `이전 프레임 (← / Shift+← 1초) · ${fps}`;
+  frameNextBtn.title = `다음 프레임 (→ / Shift+→ 1초) · ${fps}`;
 }
 
 // ── Estimated output size ─────────────────────────────────────────────────
@@ -376,10 +440,72 @@ function togglePlay() {
 }
 
 playerPlayBtn.addEventListener('click', togglePlay);
+
+// ── Frame capture (사진 저장) ──────────────────────────────────────────────
+let toastTimer = null;
+function showToast(msg) {
+  captureToast.textContent = msg;
+  captureToast.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => captureToast.classList.add('hidden'), 2200);
+}
+
+function stampForName(t) {
+  const m  = Math.floor(t / 60);
+  const s  = Math.floor(t % 60);
+  const ms = Math.floor((t % 1) * 1000);
+  return `${m}m${String(s).padStart(2,'0')}s${String(ms).padStart(3,'0')}`;
+}
+
+function captureFrame() {
+  const seg = state.segments[state.segIdx];
+  // readyState < HAVE_CURRENT_DATA면 그릴 프레임이 아직 없다
+  if (!seg || preview.readyState < 2 || !preview.videoWidth) return;
+
+  // 화면 크기가 아닌 원본 해상도로 캡쳐한다 (번호판 판독용)
+  const canvas = document.createElement('canvas');
+  canvas.width  = preview.videoWidth;
+  canvas.height = preview.videoHeight;
+  canvas.getContext('2d').drawImage(preview, 0, 0, canvas.width, canvas.height);
+
+  const base = seg.file.name.replace(/\.[^.]+$/, '');
+  const name = `${base}_${stampForName(preview.currentTime)}.png`;
+
+  canvas.toBlob(blob => {
+    if (!blob) { showToast('캡쳐 실패'); return; }
+    const url = URL.createObjectURL(blob);
+    const a   = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    showToast(`캡쳐 저장됨 · ${canvas.width}×${canvas.height}`);
+  }, 'image/png');   // 번호판 판독을 위해 무손실 PNG
+
+  captureFlash.classList.remove('flash');
+  void captureFlash.offsetWidth; // reflow to restart animation
+  captureFlash.classList.add('flash');
+}
+
+function stepFrame(dir, seconds = null) {
+  if (!state.segments.length) return;
+  if (!preview.paused) preview.pause();
+  const t = getGlobalTime() + dir * (seconds ?? currentFrameDur());
+  seekToGlobal(Math.max(state.trimStart, Math.min(t, state.trimEnd)));
+}
+
+captureBtn.addEventListener('click', captureFrame);
+framePrevBtn.addEventListener('click', () => stepFrame(-1));
+frameNextBtn.addEventListener('click', () => stepFrame(1));
+
 document.addEventListener('keydown', e => {
-  if (e.code === 'Space' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
-    e.preventDefault(); togglePlay();
-  }
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (e.code === 'KeyC' && !e.ctrlKey && !e.metaKey) { e.preventDefault(); captureFrame(); }
+  else if (e.code === 'ArrowLeft')  { e.preventDefault(); stepFrame(-1, e.shiftKey ? 1 : null); }
+  else if (e.code === 'ArrowRight') { e.preventDefault(); stepFrame( 1, e.shiftKey ? 1 : null); }
 });
 
 // ── Timeline click / drag ──────────────────────────────────────────────────

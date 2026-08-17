@@ -179,6 +179,35 @@ body { margin: 0; }
   backdrop-filter: blur(4px);
 }
 
+/* ── Capture feedback ─────────────────────── */
+.capture-flash {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+}
+@keyframes capture-flash-anim {
+  0%   { opacity: 0.85; }
+  100% { opacity: 0; }
+}
+.capture-flash.flash { animation: capture-flash-anim 0.35s ease-out forwards; }
+
+.capture-toast {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+  white-space: nowrap;
+}
+
 /* ── File list ───────────────────────────── */
 .file-list-wrap {
   border: 1px solid var(--border);
@@ -288,7 +317,8 @@ body { margin: 0; }
 }
 
 /* Play button inside timeline */
-.tl-play-btn {
+.tl-play-btn,
+.tl-icon-btn {
   background: none;
   border: none;
   cursor: pointer;
@@ -302,8 +332,11 @@ body { margin: 0; }
   flex-shrink: 0;
   transition: color 0.15s;
 }
-.tl-play-btn:hover { color: var(--accent); }
-.tl-play-btn svg { width: 18px; height: 18px; }
+.tl-play-btn:hover,
+.tl-icon-btn:hover { color: var(--accent); }
+.tl-play-btn svg,
+.tl-icon-btn svg { width: 18px; height: 18px; }
+.tl-capture-btn svg { width: 20px; height: 20px; }
 
 
 .timeline-track {
